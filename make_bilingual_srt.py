@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
+#  coding: utf-8 
 # Generate bilingual (English + Hebrew) subtitles in SRT format.
 # - Transcribes English speech from an input media file using Whisper (open-source).
 # - Translates each subtitle line to Hebrew using Argos Translate (offline-capable).
@@ -71,7 +71,7 @@ def heb_spellfix_languagetool(text: str) -> str:
     try:
         # שרת ציבורי של LT: יש מגבלות קצב. אפשר גם להקים מקומית אם תרצי.
         url = "https://api.languagetool.org/v2/check"
-        # כדי לשמור על פיסוק, נעבוד על כל הכתובית כיחידה אחת (קצרה בדרך כלל)
+        # כדי לשמור על פיסוק, נעבוד על כל הכתובית כיחידה אחת (קצרה בדרך כלל) 
         data = {
             "language": "he",
             "text": text
@@ -210,16 +210,22 @@ def ensure_translation(text: str, src_lang: str | None, tgt_lang: str | None) ->
 
 
 
-def transcribe_to_segments(media_path: str, trg_lang: str|None ,src_lang: str|None, model_size="small",prefer_via_english=True):
+def transcribe_to_segments(media_path: str, trg_lang: str|None ,src_lang: str|None, model_size="medium",prefer_via_english=True):
     from faster_whisper import WhisperModel
     LOCAL_MODEL_DIR = r"D:\models\faster-whisper-small"
 
+
+    
     src_lang = _norm_lang(src_lang)
     trg_lang = _norm_lang(trg_lang) or "en"
     try:
-        model = WhisperModel(LOCAL_MODEL_DIR, compute_type="float32", local_files_only=True)
+        model = WhisperModel(model_size, device="auto", compute_type="float32", local_files_only=False) 
+        print("online model")
     except Exception:
-        model = WhisperModel(model_size, device="auto") 
+        model = WhisperModel(LOCAL_MODEL_DIR, device="auto", compute_type="float32", local_files_only=True)
+        print("locall model")
+
+
     same_lang = (src_lang is not None and trg_lang == src_lang)
     use_translate = (trg_lang == "en") or (prefer_via_english and trg_lang != "en" and not same_lang)
 
@@ -264,9 +270,9 @@ def transcribe_to_segments(media_path: str, trg_lang: str|None ,src_lang: str|No
     return out, info.language, segments_text_lang
 
 
-def make_bilingual_srt(media_path: str, out_path: str,trg_lang: str ,src_lang: str):
+def make_bilingual_srt(media_path: str, out_path: str, trg_lang: str, src_lang: str):
     segments, detected_src, seg_text_lang = transcribe_to_segments(
-        media_path, trg_lang, src_lang, model_size="small", prefer_via_english=True
+        media_path, trg_lang, src_lang, model_size="medium", prefer_via_english=True
     )
 
     subs = []
