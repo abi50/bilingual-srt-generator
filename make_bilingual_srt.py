@@ -207,7 +207,22 @@ def ensure_translation(text: str, src_lang: str | None, tgt_lang: str | None) ->
     except Exception:
         return text, src
 
+MAX_DURATION = 3.0  
 
+def _split_by_time(words, max_dur=MAX_DURATION):
+    """מקבל words עם start/end ומחזיר רשימת תתי-סגמנטים קצרים"""
+    chunks, cur_words = [], []
+    seg_start = None
+    for w in words:
+        if seg_start is None:
+            seg_start = w.start
+        cur_words.append(w)
+        if (w.end - seg_start) >= max_dur:
+            chunks.append((seg_start, w.end, " ".join(x.word for x in cur_words).strip()))
+            cur_words, seg_start = [], None
+    if cur_words:
+        chunks.append((seg_start, cur_words[-1].end, " ".join(x.word for x in cur_words).strip()))
+    return chunks
 
 
 def transcribe_to_segments(media_path: str, trg_lang: str|None ,src_lang: str|None, model_size="medium",prefer_via_english=True):
@@ -242,6 +257,7 @@ def transcribe_to_segments(media_path: str, trg_lang: str|None ,src_lang: str|No
         beam_size=9,
         language=src_lang,
         vad_filter=True,
+        word_timestamps=True,
         temperature=[0.0, 0.2, 0.4, 0.6],  
         compression_ratio_threshold=2.4, 
         vad_parameters=dict(
@@ -256,17 +272,28 @@ def transcribe_to_segments(media_path: str, trg_lang: str|None ,src_lang: str|No
     )
 
     segments_text_lang = "en" if task == "translate" else info.language
-    MAX_DURATION = 3.0 
-    out = []
-    for i, seg in enumerate(segments, start=1):
 
-      
-        out.append({
-            "index": i,
-            "start": dt.timedelta(seconds=seg.start),
-            "end": dt.timedelta(seconds=seg.end),
-            "text": seg.text.strip()
-        })
+    out = []
+    
+    for i, seg in enumerate(segments, start=1):
+        if hasattr(seg, "words") and seg.words:
+            for (st, en, txt) in _split_by_time(seg.words, MAX_DURATION):
+                out.append({
+                    "index": len(out)+1,
+                    "start": dt.timedelta(seconds=st),
+                    "end": dt.timedelta(seconds=en),
+                    "text": txt,
+                })
+        else:
+            out.append({
+                "index": len(out)+1,
+                "start": dt.timedelta(seconds=seg.start),
+                "end": dt.timedelta(seconds=seg.end),
+                "text": seg.text.strip()
+            })
+
+
+
     return out, info.language, segments_text_lang
 
 
