@@ -22,11 +22,28 @@
 import os
 import sys
 import srt
+from dotenv import load_dotenv
+load_dotenv()  # טוען משתני סביבה מקובץ .env לתהליך
+# טוען את .env גם מתקיית הEXE
+base_path = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+env_path = os.path.join(base_path, ".env")
+if os.path.exists(env_path):
+    load_dotenv(env_path, override=True)
+
 import datetime as dt
 from typing import List
 from faster_whisper import WhisperModel
 import re
 import requests
+
+import xml.sax.saxutils as xml_escape
+import math
+
+try:
+    import deepl
+    HAVE_DEEPL = True
+except Exception:
+    HAVE_DEEPL = False
 
 
 try:
@@ -147,6 +164,18 @@ def heb_spellfix(text: str) -> str:
         return text
 
 
+_DEEPL_LANG_MAP = {
+    "en": "EN", "he": "HE", "iw": "HE", "fr": "FR", "ar": "AR",
+    "ru": "RU", "es": "ES", "de": "DE", "it": "IT", "pt": "PT-PT",
+    "tr": "TR", "uk": "UK", "pl": "PL", "nl": "NL", "zh": "ZH", "ja": "JA", "ko": "KO"
+}
+def _deepl_code(lang: str | None) -> str | None:
+    if not lang: return None
+    v = _norm_lang(lang)
+    if not v: return None
+    return _DEEPL_LANG_MAP.get(v)
+
+
 def _norm_lang(language: str | None) -> str | None:
  
     if not language:
@@ -207,6 +236,90 @@ def ensure_translation(text: str, src_lang: str | None, tgt_lang: str | None) ->
     except Exception:
         return text, src
 
+def translate_segments_deepl_all(segments, src_lang: str | None, tgt_lang: str) -> list[str]:
+    """
+    מתרגם את *כל הטקסט* של הכתוביות בבת אחת עם הקשר,
+    תוך שמירת שיוך מדויק לכל סגמנט ע"י תגיות XML <s i="...">...</s>.
+    מפצל לבאצ'ים אם ארוך מדי.
+
+    מחזיר: רשימת מחרוזות מתורגמות באותו סדר ובדיוק באורך len(segments).
+    """
+    if not HAVE_DEEPL:
+        raise RuntimeError("deepl package not installed")
+
+    auth = os.environ.get("DEEPL_API_KEY") or os.environ.get("DEEPL_AUTH_KEY")
+    if not auth:
+        raise RuntimeError("DEEPL_API_KEY env var not set")
+
+    translator = deepl.Translator(auth)
+
+    src = _deepl_code(src_lang)  # יכול להיות None (זיהוי אוטומטי)
+    tgt = _deepl_code(tgt_lang) or "EN"
+
+    # בונים XML: כל סגמנט עטוף בתגית <s i="index">text</s>
+    # כדי להימנע מבעיות XML – עושים escape לתוכן.
+    # נבצע פיצול לבאצ'ים ~20k תווים בטקסט כדי לא לחרוג ממגבלות.
+    MAX_CHARS = 20000
+
+    def build_xml(batch):
+        parts = []
+        parts.append("<doc>")
+        for seg in batch:
+            i = seg["index"]
+            txt = seg["text"] or ""
+            txt = xml_escape.escape(txt)
+            parts.append(f'<s i="{i}">{txt}</s>')
+        parts.append("</doc>")
+        return "".join(parts)
+
+    # נרוץ על הסגמנטים וניצור באצ'ים לפי ערך אורך מצטבר משוער של ה-XML
+    batches = []
+    cur, cur_len = [], 0
+    for seg in segments:
+        # הערכת תוספת אורך (תגיות + טקסט)
+        add_len = len(seg["text"]) + 40
+        if cur and (cur_len + add_len > MAX_CHARS):
+            batches.append(cur)
+            cur, cur_len = [], 0
+        cur.append(seg)
+        cur_len += add_len
+    if cur:
+        batches.append(cur)
+
+    # נתרגם כל באץ' בבת אחת עם tag_handling=xml כדי לשמר את המבנה
+    translated_by_index = {}
+    for batch in batches:
+        xml_text = build_xml(batch)
+        result = translator.translate_text(
+            xml_text,
+            source_lang=src, target_lang=tgt,
+            tag_handling="xml",
+            split_sentences="nonewlines",
+            preserve_formatting=True,
+            outline_detection=False,  # אל תנסו לנחש מבנה כותרות וכו'
+        )
+        # כעת צריך "לחלץ" חזרה את הטקסט מתוך ה-XML המוחזר (התגיות נשמרות)
+        # DeepL מחזיר טקסט עם אותן תגיות <s i="...">...</s>
+        out = result.text
+
+        # נחלץ באמצעות regex פשוט – נזהר שלא לשבור RTL:
+        import re
+        pattern = re.compile(r'<s i="(\d+)">(.*?)</s>', flags=re.DOTALL)
+        for m in pattern.finditer(out):
+            idx = int(m.group(1))
+            inner = m.group(2)
+            # להחזיר תווי XML לאחור:
+            inner = inner.replace("&lt;","<").replace("&gt;",">").replace("&amp;","&")
+            translated_by_index[idx] = inner.strip()
+
+    # מייצרים רשימה מתורגמת בסדר נכון; אם משהו חסר – נחזיר ריק
+    out_list = []
+    for seg in segments:
+        out_list.append(translated_by_index.get(seg["index"], ""))
+
+    return out_list
+
+
 MAX_DURATION = 3.0  
 
 def _split_by_time(words, max_dur=MAX_DURATION):
@@ -217,7 +330,7 @@ def _split_by_time(words, max_dur=MAX_DURATION):
         if seg_start is None:
             seg_start = w.start
         cur_words.append(w)
-        if (w.end - seg_start) >= max_dur  and w.word.strip()[-1] in ".!?,":
+        if (w.end - seg_start) >= max_dur :
             chunks.append((seg_start, w.end, " ".join(x.word for x in cur_words).strip()))
             cur_words, seg_start = [], None
     if cur_words:
@@ -227,7 +340,8 @@ def _split_by_time(words, max_dur=MAX_DURATION):
 
 def transcribe_to_segments(media_path: str, trg_lang: str|None ,src_lang: str|None, model_size="medium",prefer_via_english=True):
     from faster_whisper import WhisperModel
-    LOCAL_MODEL_DIR = r"D:\models\faster-whisper-medium"
+    base_path = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
+    LOCAL_MODEL_DIR = os.path.join(base_path, 'models', 'faster-whisper-medium')
 
 
     
@@ -303,18 +417,34 @@ def make_bilingual_srt(media_path: str, out_path: str, trg_lang: str, src_lang: 
     )
 
     subs = []
+        # === תרגום כל הקובץ בבת אחת (עם הקשר) באמצעות DeepL, עם נפילה ל-Argos אם אין API ===
+    try:
+        translated_texts = translate_segments_deepl_all(segments, seg_text_lang, trg_lang)
+        out_lang = trg_lang  # יעד בפועל
+        use_deepl = True
+        print("[deepl] used for whole-file translation")
+    except Exception as e:
+        print(f"[deepl] fallback to per-line: {e}")
+        translated_texts = []
+        use_deepl = False
+
+    subs = []
     for i, seg in enumerate(segments, start=1):
         base_text = seg["text"]
-        tgt_text, out_lang = ensure_translation(base_text, seg_text_lang, trg_lang)
+        if use_deepl:
+            tgt_text = translated_texts[i-1] if i-1 < len(translated_texts) else ""
+            out_lang = trg_lang
+        else:
+            # נפילה: תרגום שורה-שורה כבעבר
+            tgt_text, out_lang = ensure_translation(base_text, seg_text_lang, trg_lang)
+
+        # תיקון שגיאות כתיב בעברית (אם יעד עברית)
         if (_norm_lang(out_lang) == "he"):
             tgt_text = heb_spellfix(tgt_text)
 
-        content= _wrap_rtl_if_needed(tgt_text, out_lang)
-        # if you want 2 lines-  source text and translated text: 
-        # content = f"{_wrap_rtl_if_needed(base_text, seg_text_lang)}\n{_wrap_rtl_if_needed(tgt_text, out_lang)}"
-
+        content = _wrap_rtl_if_needed(tgt_text, out_lang)
         subs.append(srt.Subtitle(index=i, start=seg["start"], end=seg["end"], content=content))
-   
+
     srt_text = srt.compose(subs)
     with open(out_path, "w", encoding="utf-8", newline="\n") as f:
         f.write(srt_text)
