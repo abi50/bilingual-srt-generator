@@ -217,7 +217,7 @@ def _split_by_time(words, max_dur=MAX_DURATION):
         if seg_start is None:
             seg_start = w.start
         cur_words.append(w)
-        if (w.end - seg_start) >= max_dur:
+        if (w.end - seg_start) >= max_dur  and w.word.strip()[-1] in ".!?,":
             chunks.append((seg_start, w.end, " ".join(x.word for x in cur_words).strip()))
             cur_words, seg_start = [], None
     if cur_words:
@@ -227,7 +227,7 @@ def _split_by_time(words, max_dur=MAX_DURATION):
 
 def transcribe_to_segments(media_path: str, trg_lang: str|None ,src_lang: str|None, model_size="medium",prefer_via_english=True):
     from faster_whisper import WhisperModel
-    LOCAL_MODEL_DIR = r"D:\models\faster-whisper-small"
+    LOCAL_MODEL_DIR = r"D:\models\faster-whisper-medium"
 
 
     
