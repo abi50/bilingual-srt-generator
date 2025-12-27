@@ -83,6 +83,14 @@ def _init_symspell(dict_path: str | None = None):
             sym.create_dictionary_entry(w, 10)
     _SYM = sym
 
+def _bilingual_content(src_text: str, tgt_text: str, tgt_lang: str | None) -> str:
+    
+    rtl = {"he", "ar", "fa", "ur"}
+    is_rtl = (_norm_lang(tgt_lang) in rtl)
+    if is_rtl:
+        tgt_text = f"\u202B{tgt_text}\u202C"  # עטיפת RTL לשורה התחתונה
+    return f"{src_text}\n{tgt_text}"
+
 def heb_spellfix_languagetool(text: str) -> str:
   
     try:
@@ -442,7 +450,7 @@ def make_bilingual_srt(media_path: str, out_path: str, trg_lang: str, src_lang: 
         if (_norm_lang(out_lang) == "he"):
             tgt_text = heb_spellfix(tgt_text)
 
-        content = _wrap_rtl_if_needed(tgt_text, out_lang)
+        content = _bilingual_content(base_text, tgt_text, out_lang)
         subs.append(srt.Subtitle(index=i, start=seg["start"], end=seg["end"], content=content))
 
     srt_text = srt.compose(subs)
