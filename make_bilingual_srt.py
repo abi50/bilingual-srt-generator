@@ -177,12 +177,12 @@ _DEEPL_LANG_MAP = {
     "ru": "RU", "es": "ES", "de": "DE", "it": "IT", "pt": "PT-PT",
     "tr": "TR", "uk": "UK", "pl": "PL", "nl": "NL", "zh": "ZH", "ja": "JA", "ko": "KO"
 }
+
 def _deepl_code(lang: str | None) -> str | None:
     if not lang: return None
     v = _norm_lang(lang)
     if not v: return None
     return _DEEPL_LANG_MAP.get(v)
-
 
 def _norm_lang(language: str | None) -> str | None:
  
@@ -328,21 +328,32 @@ def translate_segments_deepl_all(segments, src_lang: str | None, tgt_lang: str) 
     return out_list
 
 
-MAX_DURATION = 3.0  
-
-def _split_by_time(words, max_dur=MAX_DURATION):
-    """מקבל words עם start/end ומחזיר רשימת תתי-סגמנטים קצרים"""
+MAX_DURATION = 4.0  
+def _split_by_time(words, max_dur=MAX_DURATION, min_words=3):
+    """
+    מפצל לפי זמן, אבל לא סוגר כתובית אם יש בה פחות ממינימום מילים
+    כדי למנוע כתוביות של מילה אחת / שתיים.
+    """
     chunks, cur_words = [], []
     seg_start = None
+
     for w in words:
         if seg_start is None:
             seg_start = w.start
         cur_words.append(w)
-        if (w.end - seg_start) >= max_dur :
-            chunks.append((seg_start, w.end, " ".join(x.word for x in cur_words).strip()))
+
+        dur = w.end - seg_start
+        if dur >= max_dur and len(cur_words) >= min_words:
+            chunks.append(
+                (seg_start, w.end, " ".join(x.word for x in cur_words).strip())
+            )
             cur_words, seg_start = [], None
+
     if cur_words:
-        chunks.append((seg_start, cur_words[-1].end, " ".join(x.word for x in cur_words).strip()))
+        chunks.append(
+            (seg_start, cur_words[-1].end, " ".join(x.word for x in cur_words).strip())
+        )
+
     return chunks
 
 
@@ -361,17 +372,25 @@ def transcribe_to_segments(media_path: str, trg_lang: str|None ,src_lang: str|No
     except Exception:
         model = WhisperModel(LOCAL_MODEL_DIR, device="auto", compute_type="float32", local_files_only=True)
         print("locall model")
-
-
+    
     same_lang = (src_lang is not None and trg_lang == src_lang)
     use_translate = (trg_lang == "en") or (prefer_via_english and trg_lang != "en" and not same_lang)
+
+    # קובע האם Whisper יבצע תרגום (translate) או רק תמלול (transcribe).
+    # ברוב המקרים עדיף לעבור דרך אנגלית, כי Whisper נותן את התוצאות הכי מדויקות באנגלית.
+    # לכן:
+    # - אם שפת היעד היא אנגלית → תמיד נשתמש בתרגום.
+    # - אם שפת היעד אינה אנגלית, אבל מוגדר prefer_via_english=True →
+    #   נתרגם קודם לאנגלית ואז נתרגם מאנגלית לשפת היעד,
+    #   מה שנותן איכות טובה יותר מאשר תרגום ישיר משפת המקור.
+    # - אם שפת המקור ושפת היעד זהות → אין צורך בתרגום, רק תמלול.
 
 
     task = "translate" if use_translate else "transcribe"
 
     initial_prompt = None
     if (task == "transcribe" and (src_lang == "he")):
-        initial_prompt = ", מתקלקל היא אומרת שלום שלום וברוכים הבאים. היום נדבר על תהליך העבודה, בדיקות ופרקטיקות טובות."
+        initial_prompt = ", מתקלקל היא אומרת שלום  וברוכים הבאים. היום נדבר על תהליך העבודה, בדיקות ופרקטיקות טובות."
 
     segments, info = model.transcribe(
         media_path,
@@ -418,25 +437,30 @@ def transcribe_to_segments(media_path: str, trg_lang: str|None ,src_lang: str|No
 
     return out, info.language, segments_text_lang
 
-
 def make_bilingual_srt(media_path: str, out_path: str, trg_lang: str, src_lang: str):
     segments, detected_src, seg_text_lang = transcribe_to_segments(
         media_path, trg_lang, src_lang, model_size="medium", prefer_via_english=True
     )
+    use_deepl = False
+    translated_texts = []
 
-    subs = []
+
         # === תרגום כל הקובץ בבת אחת (עם הקשר) באמצעות DeepL, עם נפילה ל-Argos אם אין API ===
-    try:
-        translated_texts = translate_segments_deepl_all(segments, seg_text_lang, trg_lang)
-        out_lang = trg_lang  # יעד בפועל
-        use_deepl = True
-        print("[deepl] used for whole-file translation")
-    except Exception as e:
-        print(f"[deepl] fallback to per-line: {e}")
-        translated_texts = []
-        use_deepl = False
-
+    if _norm_lang(seg_text_lang) != _norm_lang(trg_lang):
+         try:
+             translated_texts = translate_segments_deepl_all(segments, seg_text_lang, trg_lang)
+             out_lang = trg_lang  # יעד בפועל
+             use_deepl = True
+             print("[deepl] used for whole-file translation")
+         except Exception as e:
+             print(f"[deepl] fallback to per-line: {e}")
+             use_deepl = False
+    else:
+        print("[deepl] skipped – segments already in target language")
     subs = []
+    if not use_deepl and _norm_lang(seg_text_lang) != _norm_lang(trg_lang) and not HAVE_ARGOS:
+        print("[warn] No translation engine available – output will remain in source language")
+
     for i, seg in enumerate(segments, start=1):
         base_text = seg["text"]
         if use_deepl:
@@ -446,11 +470,11 @@ def make_bilingual_srt(media_path: str, out_path: str, trg_lang: str, src_lang: 
             # נפילה: תרגום שורה-שורה כבעבר
             tgt_text, out_lang = ensure_translation(base_text, seg_text_lang, trg_lang)
 
-        # תיקון שגיאות כתיב בעברית (אם יעד עברית)
-        if (_norm_lang(out_lang) == "he"):
-            tgt_text = heb_spellfix(tgt_text)
+        # # תיקון שגיאות כתיב בעברית (אם יעד עברית)
+        # if (_norm_lang(out_lang) == "he"):
+            # tgt_text = heb_spellfix(tgt_text)
 
-        content = _bilingual_content(base_text, tgt_text, out_lang)
+        content =  tgt_text
         subs.append(srt.Subtitle(index=i, start=seg["start"], end=seg["end"], content=content))
 
     srt_text = srt.compose(subs)
