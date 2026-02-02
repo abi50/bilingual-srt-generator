@@ -12,7 +12,7 @@ It is designed to work reliably even when external translation services are unav
 - Generate SRT subtitle files from video/audio files
 - Transcribe speech in the source language
 - Optionally translate subtitles into another language
-- Remain stable and usable even without internet access or external translation APIs
+- Remain usable even when external translation services are unavailable.
 
 ---
 
