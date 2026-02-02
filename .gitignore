@@ -1,0 +1,16 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# PyInstaller
+build/
+dist/
+*.spec
+
+# Media & outputs
+*.mp4
+*.srt
+
+# Environment / secrets
+.env
